@@ -2,12 +2,13 @@
   "name": "grabatoy-vercel-ezmob-gateway",
   "version": "1.0.0",
   "private": true,
+  "main": "index.js",
   "type": "module",
   "engines": {
     "node": "24.x"
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check api/roku-vast.js && node --check api/health.js && node --check src/gateway.js && node --check src/openrtb.js && node --check src/vast.js"
+    "check": "node --check index.js && node --check api/roku-vast.js && node --check api/health.js && node --check src/gateway.js && node --check src/openrtb.js && node --check src/vast.js && node --check src/health.js && node --check src/node-handler.js"
   }
 }

@@ -78,7 +78,7 @@ Without `EZMOB_OPENRTB_URL`, `/roku/vast` deliberately returns an empty VAST 3 d
 7. Verify:
    `https://<project>.vercel.app/roku/vast`
 
-Vercel supports root-level `/api` functions without additional build configuration and supports same-application rewrites through `vercel.json`.
+The repo includes a root `index.js` entrypoint (required by Vercel’s backend / Fluid compute detection) plus legacy `/api` handlers for local `vercel dev`. Public URLs are mapped with rewrites in `vercel.json`.
 
 ## 3. Vercel environment variables
 
