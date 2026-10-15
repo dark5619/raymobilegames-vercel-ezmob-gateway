@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 
 function intValue(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -14,6 +15,17 @@ function floatValue(value) {
 function cleanString(value, max = 1024) {
   if (value === undefined || value === null) return '';
   return String(value).trim().slice(0, max);
+}
+
+export function classifyClientIp(value) {
+  const raw = cleanString(value, 128);
+  if (!raw) return { version: 0 };
+
+  const ip = raw.startsWith('[') && raw.endsWith(']') ? raw.slice(1, -1) : raw;
+  const version = net.isIP(ip);
+  if (version === 4) return { version: 4, ip };
+  if (version === 6) return { version: 6, ipv6: ip };
+  return { version: 0 };
 }
 
 export function buildOpenRtbRequest({ query, clientIp, httpUserAgent, env = process.env }) {
@@ -48,7 +60,7 @@ export function buildOpenRtbRequest({ query, clientIp, httpUserAgent, env = proc
     skip: 0,
     minbitrate: Math.max(1, intValue(env.VIDEO_MIN_BITRATE, 300)),
     maxbitrate: Math.max(1, intValue(env.VIDEO_MAX_BITRATE, 12000)),
-    placement: Math.max(1, intValue(env.VIDEO_PLACEMENT, 5)),
+    placement: Math.max(1, intValue(env.VIDEO_PLACEMENT, 1)),
     pos: Math.max(0, intValue(env.VIDEO_POS, 7)),
     playbackmethod: [Math.max(1, intValue(env.VIDEO_PLAYBACK_METHOD, 1))]
   };
@@ -72,10 +84,14 @@ export function buildOpenRtbRequest({ query, clientIp, httpUserAgent, env = proc
     os: 'Roku',
     osv: cleanString(query.osv, 128),
     ua: rokuUa,
-    lmt
+    lmt,
+    w: width,
+    h: height
   };
 
-  if (clientIp) device.ip = cleanString(clientIp, 128);
+  const classifiedIp = classifyClientIp(clientIp);
+  if (classifiedIp.version === 4) device.ip = classifiedIp.ip;
+  if (classifiedIp.version === 6) device.ipv6 = classifiedIp.ipv6;
 
   // EZmob explicitly said not to pass RIDA as the standard advertising ID when LAT is enabled.
   if (lmt === 0 && rida) device.ifa = rida;
@@ -95,7 +111,8 @@ export function buildOpenRtbRequest({ query, clientIp, httpUserAgent, env = proc
       name: appName,
       bundle: appBundle,
       domain: appDomain,
-      storeurl: appStoreUrl
+      storeurl: appStoreUrl,
+      cat: ['IAB9-30']
     },
     device,
     regs: {
@@ -113,6 +130,9 @@ export function buildOpenRtbRequest({ query, clientIp, httpUserAgent, env = proc
     if (gdpr === '0' || gdpr === '1') request.regs.ext.gdpr = Number(gdpr);
     if (usPrivacy) request.regs.ext.us_privacy = usPrivacy;
   }
+
+  const appVer = cleanString(query.app_version, 64);
+  if (appVer) request.app.ver = appVer;
 
   if (consent) {
     request.user = { ext: { consent } };

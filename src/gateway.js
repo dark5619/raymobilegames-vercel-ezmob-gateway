@@ -38,6 +38,46 @@ function safeLog(kind, payload = {}) {
   console.log(JSON.stringify(safe));
 }
 
+function headerNames(headers) {
+  if (!headers) return [];
+  if (typeof headers.keys === 'function') return [...headers.keys()];
+  return Object.keys(headers);
+}
+
+function getHeader(headers, name) {
+  if (!headers) return '';
+  if (typeof headers.get === 'function') return String(headers.get(name) || '');
+  const lower = String(name).toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (String(key).toLowerCase() === lower) return String(value ?? '');
+  }
+  return '';
+}
+
+function hasVendorRequestIdHeader(headers) {
+  return headerNames(headers).some((name) => (
+    /request[-_]?id/i.test(name) || /^x-correlation-id$/i.test(name)
+  ));
+}
+
+function safeUrlParts(value) {
+  try {
+    const url = new URL(value);
+    return {
+      protocol: url.protocol.replace(':', ''),
+      host: url.hostname
+    };
+  } catch {
+    return { protocol: '', host: '' };
+  }
+}
+
+function ipVersionFromDevice(device = {}) {
+  if (device.ip) return 4;
+  if (device.ipv6) return 6;
+  return 0;
+}
+
 export function validateUpstreamUrl(value) {
   if (!value) return null;
 
@@ -86,6 +126,8 @@ export async function handleRokuVast(req, res, { env = process.env, fetchImpl = 
   const clientIp = getClientIp(req.headers || {});
   const httpUserAgent = String(req.headers?.['user-agent'] || '');
   const bidRequest = buildOpenRtbRequest({ query, clientIp, httpUserAgent, env });
+  const configured = safeUrlParts(upstreamUrl);
+  const ipVersion = ipVersionFromDevice(bidRequest.device);
 
   safeLog('openrtb_request', {
     context,
@@ -93,12 +135,14 @@ export async function handleRokuVast(req, res, { env = process.env, fetchImpl = 
     bundle: bidRequest.app.bundle,
     lmt: bidRequest.device.lmt,
     ifa_present: Boolean(bidRequest.device.ifa),
-    ip_present: Boolean(bidRequest.device.ip),
+    ip_present: Boolean(bidRequest.device.ip || bidRequest.device.ipv6),
+    ip_version: ipVersion,
     ua_present: Boolean(bidRequest.device.ua),
     width: bidRequest.imp[0].video.w,
     height: bidRequest.imp[0].video.h,
     bidfloor_present: Number.isFinite(bidRequest.imp[0].bidfloor),
-    upstream_protocol: new URL(upstreamUrl).protocol.replace(':', '')
+    upstream_protocol: configured.protocol,
+    configured_protocol: configured.protocol
   });
 
   const timeoutMs = Math.max(250, intValue(env.EZMOB_HTTP_TIMEOUT_MS, 1200));
@@ -116,6 +160,7 @@ export async function handleRokuVast(req, res, { env = process.env, fetchImpl = 
         'User-Agent': 'RayMobileGames-GrabAToy-OpenRTB-Gateway/1.0'
       },
       body: JSON.stringify(bidRequest),
+      redirect: 'manual',
       signal: controller.signal
     });
   } catch (error) {
@@ -126,7 +171,29 @@ export async function handleRokuVast(req, res, { env = process.env, fetchImpl = 
     clearTimeout(timer);
   }
 
-  safeLog('openrtb_response', { context, status: upstream.status });
+  const redirected = Boolean(upstream.redirected);
+  const finalParts = safeUrlParts(upstream.url);
+  const contentType = getHeader(upstream.headers, 'content-type').split(';')[0].trim();
+
+  safeLog('openrtb_response', {
+    context,
+    status: upstream.status,
+    configured_protocol: configured.protocol,
+    final_protocol: finalParts.protocol || configured.protocol,
+    final_host: finalParts.host || configured.host,
+    redirected,
+    content_type: contentType,
+    vendor_request_id_present: hasVendorRequestIdHeader(upstream.headers)
+  });
+
+  if (upstream.status >= 300 && upstream.status < 400) {
+    safeLog('upstream_redirect', {
+      context,
+      status: upstream.status,
+      location_present: Boolean(getHeader(upstream.headers, 'location'))
+    });
+    return sendVast(res);
+  }
 
   if (upstream.status === 204) {
     safeLog('no_bid', { context, reason: 'http_204' });

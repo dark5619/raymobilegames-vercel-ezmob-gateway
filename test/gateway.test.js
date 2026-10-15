@@ -4,6 +4,24 @@ import { buildOpenRtbRequest } from '../src/openrtb.js';
 import { handleRokuVast, validateUpstreamUrl } from '../src/gateway.js';
 import { EMPTY_VAST } from '../src/vast.js';
 
+async function withCapturedLogs(fn) {
+  const logs = [];
+  const original = console.log;
+  console.log = (line) => {
+    try {
+      logs.push(JSON.parse(line));
+    } catch {
+      logs.push({ raw: line });
+    }
+  };
+  try {
+    await fn(logs);
+  } finally {
+    console.log = original;
+  }
+  return logs;
+}
+
 function makeReq(url, headers = {}) {
   return {
     method: 'GET',
@@ -34,10 +52,11 @@ const EZMOB_HTTP_URL = 'http://ads-n8it6d.rtbexchanges.com/openrtb/780760269';
 const EZMOB_HTTPS_URL = 'https://ads-n8it6d.rtbexchanges.com/openrtb/780760269';
 
 const baseEnv = {
-  EZMOB_OPENRTB_URL: EZMOB_HTTPS_URL,
+  EZMOB_OPENRTB_URL: EZMOB_HTTP_URL,
   EZMOB_TMAX_MS: '500',
   EZMOB_HTTP_TIMEOUT_MS: '1200',
-  APP_BUNDLE: '872115'
+  APP_BUNDLE: '872115',
+  EZMOB_BID_FLOOR_USD: ''
 };
 
 test('LAT off includes Roku RIDA in device.ifa', () => {
@@ -141,15 +160,25 @@ test('EZmob HTTP diagnostic endpoint is used for the upstream POST', async () =>
   const req = makeReq('/roku/vast?context=startup&lmt=0&ifa=fake');
   const res = makeRes();
   let postedUrl = null;
-  const fetchImpl = async (url) => {
+  let fetchOptions = null;
+  const fetchImpl = async (url, options) => {
     postedUrl = url;
-    return { status: 204, ok: true, json: async () => ({}) };
+    fetchOptions = options;
+    return {
+      status: 204,
+      ok: true,
+      redirected: false,
+      url: EZMOB_HTTP_URL,
+      headers: { 'content-type': 'application/json' },
+      json: async () => ({})
+    };
   };
   await handleRokuVast(req, res, {
     env: { ...baseEnv, EZMOB_OPENRTB_URL: EZMOB_HTTP_URL },
     fetchImpl
   });
   assert.equal(postedUrl, EZMOB_HTTP_URL);
+  assert.equal(fetchOptions.redirect, 'manual');
   assert.equal(res.body, EMPTY_VAST);
 });
 
@@ -187,3 +216,123 @@ test('highest priced compatible VAST bid is selected', async () => {
   await handleRokuVast(req, res, { env: baseEnv, fetchImpl });
   assert.equal(res.body, high);
 });
+
+test('IPv4 is written to device.ip', () => {
+  const request = buildOpenRtbRequest({
+    query: { lmt: '0', ifa: 'rida', w: '1280', h: '720' },
+    clientIp: '203.0.113.10',
+    httpUserAgent: 'Roku/DVP-15.0',
+    env: baseEnv
+  });
+  assert.equal(request.device.ip, '203.0.113.10');
+  assert.equal(Object.hasOwn(request.device, 'ipv6'), false);
+});
+
+test('IPv6 is written to device.ipv6 and never device.ip', () => {
+  const request = buildOpenRtbRequest({
+    query: { lmt: '0', ifa: 'rida', w: '1280', h: '720' },
+    clientIp: '2001:db8::1',
+    httpUserAgent: 'Roku/DVP-15.0',
+    env: baseEnv
+  });
+  assert.equal(request.device.ipv6, '2001:db8::1');
+  assert.equal(Object.hasOwn(request.device, 'ip'), false);
+});
+
+test('invalid client IP is omitted', () => {
+  const request = buildOpenRtbRequest({
+    query: { lmt: '0', ifa: 'rida', w: '1280', h: '720' },
+    clientIp: 'not-an-ip',
+    httpUserAgent: 'Roku/DVP-15.0',
+    env: baseEnv
+  });
+  assert.equal(Object.hasOwn(request.device, 'ip'), false);
+  assert.equal(Object.hasOwn(request.device, 'ipv6'), false);
+});
+
+test('app.cat exists and app.ver is forwarded', () => {
+  const request = buildOpenRtbRequest({
+    query: { lmt: '0', ifa: 'rida', w: '1280', h: '720', app_version: '1.2.3' },
+    clientIp: '203.0.113.10',
+    httpUserAgent: 'Roku/DVP-15.0',
+    env: baseEnv
+  });
+  assert.deepEqual(request.app.cat, ['IAB9-30']);
+  assert.equal(request.app.ver, '1.2.3');
+  assert.equal(Object.hasOwn(request.app, 'publisher'), false);
+});
+
+test('device screen dimensions and default CTV placement are set', () => {
+  const request = buildOpenRtbRequest({
+    query: { lmt: '0', ifa: 'rida', w: '1280', h: '720' },
+    clientIp: '203.0.113.10',
+    httpUserAgent: 'Roku/DVP-15.0',
+    env: baseEnv
+  });
+  assert.equal(request.device.w, 1280);
+  assert.equal(request.device.h, 720);
+  assert.equal(request.imp[0].video.placement, 1);
+  assert.equal(request.imp[0].video.pos, 7);
+  assert.equal(request.imp[0].video.linearity, 1);
+  assert.equal(request.imp[0].video.skip, 0);
+  assert.deepEqual(request.imp[0].video.playbackmethod, [1]);
+  assert.equal(request.imp[0].video.startdelay, 0);
+  assert.deepEqual(request.imp[0].video.mimes, ['video/mp4']);
+  assert.deepEqual(request.imp[0].video.protocols, [2, 3, 5, 6]);
+  assert.equal(Object.hasOwn(request.imp[0], 'bidfloor'), false);
+});
+
+test('VIDEO_PLACEMENT env can restore placement 5 without code changes', () => {
+  const request = buildOpenRtbRequest({
+    query: { lmt: '0', ifa: 'rida', w: '1280', h: '720' },
+    clientIp: '203.0.113.10',
+    httpUserAgent: 'Roku/DVP-15.0',
+    env: { ...baseEnv, VIDEO_PLACEMENT: '5' }
+  });
+  assert.equal(request.imp[0].video.placement, 5);
+});
+
+for (const status of [301, 302, 307, 308]) {
+  test(`HTTP ${status} is logged as a redirect diagnostic and not followed`, async () => {
+    const req = makeReq('/roku/vast?context=startup&lmt=0&ifa=fake&w=1280&h=720');
+    const res = makeRes();
+    let fetchCalls = 0;
+    const fetchImpl = async (_url, options) => {
+      fetchCalls += 1;
+      assert.equal(options.redirect, 'manual');
+      return {
+        status,
+        ok: false,
+        redirected: false,
+        url: EZMOB_HTTP_URL,
+        headers: {
+          location: 'https://ads-n8it6d.rtbexchanges.com/openrtb/780760269?token=secret'
+        }
+      };
+    };
+
+    const logs = await withCapturedLogs(async () => {
+      await handleRokuVast(req, res, { env: baseEnv, fetchImpl });
+    });
+
+    assert.equal(fetchCalls, 1);
+    assert.equal(res.body, EMPTY_VAST);
+
+    const redirectLog = logs.find((entry) => entry.event === 'upstream_redirect');
+    assert.ok(redirectLog);
+    assert.equal(redirectLog.status, status);
+    assert.equal(redirectLog.location_present, true);
+    assert.equal(Object.hasOwn(redirectLog, 'location'), false);
+    assert.equal(
+      JSON.stringify(logs).includes('https://ads-n8it6d.rtbexchanges.com/openrtb/780760269?token=secret'),
+      false
+    );
+
+    const responseLog = logs.find((entry) => entry.event === 'openrtb_response');
+    assert.equal(responseLog.status, status);
+    assert.equal(responseLog.configured_protocol, 'http');
+    assert.equal(responseLog.final_protocol, 'http');
+    assert.equal(responseLog.final_host, 'ads-n8it6d.rtbexchanges.com');
+    assert.equal(responseLog.redirected, false);
+  });
+}
