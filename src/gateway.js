@@ -38,11 +38,29 @@ function safeLog(kind, payload = {}) {
   console.log(JSON.stringify(safe));
 }
 
-function validateUpstreamUrl(value) {
+export function validateUpstreamUrl(value) {
   if (!value) return null;
+
   try {
     const url = new URL(value);
-    if (url.protocol !== 'https:') return null;
+
+    const allowedHost = 'ads-n8it6d.rtbexchanges.com';
+    const allowedPath = '/openrtb/780760269';
+
+    if (url.hostname !== allowedHost) return null;
+    if (url.pathname !== allowedPath) return null;
+
+    if (
+      url.protocol !== 'http:' &&
+      url.protocol !== 'https:'
+    ) {
+      return null;
+    }
+
+    if (url.username || url.password || url.search || url.hash) {
+      return null;
+    }
+
     return url.toString();
   } catch {
     return null;
@@ -61,7 +79,7 @@ export async function handleRokuVast(req, res, { env = process.env, fetchImpl = 
   const upstreamUrl = validateUpstreamUrl(env.EZMOB_OPENRTB_URL);
 
   if (!upstreamUrl) {
-    safeLog('gateway_not_configured', { context, reason: 'missing_or_non_https_upstream' });
+    safeLog('gateway_not_configured', { context, reason: 'missing_or_invalid_upstream' });
     return sendVast(res);
   }
 
@@ -71,6 +89,7 @@ export async function handleRokuVast(req, res, { env = process.env, fetchImpl = 
 
   safeLog('openrtb_request', {
     context,
+    request_id: bidRequest.id,
     bundle: bidRequest.app.bundle,
     lmt: bidRequest.device.lmt,
     ifa_present: Boolean(bidRequest.device.ifa),
@@ -78,7 +97,8 @@ export async function handleRokuVast(req, res, { env = process.env, fetchImpl = 
     ua_present: Boolean(bidRequest.device.ua),
     width: bidRequest.imp[0].video.w,
     height: bidRequest.imp[0].video.h,
-    bidfloor_present: Number.isFinite(bidRequest.imp[0].bidfloor)
+    bidfloor_present: Number.isFinite(bidRequest.imp[0].bidfloor),
+    upstream_protocol: new URL(upstreamUrl).protocol.replace(':', '')
   });
 
   const timeoutMs = Math.max(250, intValue(env.EZMOB_HTTP_TIMEOUT_MS, 1200));

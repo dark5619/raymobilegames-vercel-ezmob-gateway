@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildOpenRtbRequest } from '../src/openrtb.js';
-import { handleRokuVast } from '../src/gateway.js';
+import { handleRokuVast, validateUpstreamUrl } from '../src/gateway.js';
 import { EMPTY_VAST } from '../src/vast.js';
 
 function makeReq(url, headers = {}) {
@@ -30,8 +30,11 @@ function makeRes() {
   };
 }
 
+const EZMOB_HTTP_URL = 'http://ads-n8it6d.rtbexchanges.com/openrtb/780760269';
+const EZMOB_HTTPS_URL = 'https://ads-n8it6d.rtbexchanges.com/openrtb/780760269';
+
 const baseEnv = {
-  EZMOB_OPENRTB_URL: 'https://example.test/openrtb/780760269',
+  EZMOB_OPENRTB_URL: EZMOB_HTTPS_URL,
   EZMOB_TMAX_MS: '500',
   EZMOB_HTTP_TIMEOUT_MS: '1200',
   APP_BUNDLE: '872115'
@@ -109,6 +112,60 @@ test('VAST 4 is rejected for Roku RAF compatibility', async () => {
     json: async () => ({ seatbid: [{ bid: [{ id: 'b1', price: 3, adm: vast4 }] }] })
   });
   await handleRokuVast(req, res, { env: baseEnv, fetchImpl });
+  assert.equal(res.body, EMPTY_VAST);
+});
+
+test('exact EZmob HTTP OpenRTB endpoint is accepted', () => {
+  assert.equal(validateUpstreamUrl(EZMOB_HTTP_URL), EZMOB_HTTP_URL);
+});
+
+test('exact EZmob HTTPS OpenRTB endpoint is accepted', () => {
+  assert.equal(validateUpstreamUrl(EZMOB_HTTPS_URL), EZMOB_HTTPS_URL);
+});
+
+test('another HTTP hostname is rejected', () => {
+  assert.equal(
+    validateUpstreamUrl('http://evil.example/openrtb/780760269'),
+    null
+  );
+});
+
+test('another path is rejected', () => {
+  assert.equal(
+    validateUpstreamUrl('http://ads-n8it6d.rtbexchanges.com/openrtb/000000000'),
+    null
+  );
+});
+
+test('EZmob HTTP diagnostic endpoint is used for the upstream POST', async () => {
+  const req = makeReq('/roku/vast?context=startup&lmt=0&ifa=fake');
+  const res = makeRes();
+  let postedUrl = null;
+  const fetchImpl = async (url) => {
+    postedUrl = url;
+    return { status: 204, ok: true, json: async () => ({}) };
+  };
+  await handleRokuVast(req, res, {
+    env: { ...baseEnv, EZMOB_OPENRTB_URL: EZMOB_HTTP_URL },
+    fetchImpl
+  });
+  assert.equal(postedUrl, EZMOB_HTTP_URL);
+  assert.equal(res.body, EMPTY_VAST);
+});
+
+test('unapproved HTTP hostname does not call upstream', async () => {
+  const req = makeReq('/roku/vast?context=startup&lmt=0&ifa=fake');
+  const res = makeRes();
+  let fetchCalled = false;
+  const fetchImpl = async () => {
+    fetchCalled = true;
+    return { status: 204, ok: true, json: async () => ({}) };
+  };
+  await handleRokuVast(req, res, {
+    env: { ...baseEnv, EZMOB_OPENRTB_URL: 'http://evil.example/openrtb/780760269' },
+    fetchImpl
+  });
+  assert.equal(fetchCalled, false);
   assert.equal(res.body, EMPTY_VAST);
 });
 
