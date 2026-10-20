@@ -2,6 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
+      "source": "/vast",
+      "destination": "/api/roku-vast"
+    },
+    {
       "source": "/roku/vast",
       "destination": "/api/roku-vast"
     },
