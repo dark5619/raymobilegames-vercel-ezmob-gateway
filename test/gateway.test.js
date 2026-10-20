@@ -182,7 +182,54 @@ test('EZmob HTTP diagnostic endpoint is used for the upstream POST', async () =>
   assert.equal(res.body, EMPTY_VAST);
 });
 
-test('unapproved HTTP hostname does not call upstream', async () => {
+test('openrtb_raw_request logs the exact EZmob bid body before fetch', async () => {
+  const req = makeReq('/roku/vast?context=startup&lmt=0&ifa=fake&w=1280&h=720&app_version=1.2.3');
+  const res = makeRes();
+  let postedUrl = null;
+  let fetchOptions = null;
+  let rawLogBeforeFetch = null;
+
+  const logs = await withCapturedLogs(async (captured) => {
+    const fetchImpl = async (url, options) => {
+      postedUrl = url;
+      fetchOptions = options;
+      rawLogBeforeFetch = captured.find((entry) => entry.event === 'openrtb_raw_request') || null;
+      return {
+        status: 204,
+        ok: true,
+        redirected: false,
+        url: EZMOB_HTTP_URL,
+        headers: {}
+      };
+    };
+    await handleRokuVast(req, res, { env: baseEnv, fetchImpl });
+  });
+
+  const sentBody = JSON.parse(fetchOptions.body);
+  const rawLog = logs.find((entry) => entry.event === 'openrtb_raw_request');
+  const summaryLog = logs.find((entry) => entry.event === 'openrtb_request');
+  const responseLog = logs.find((entry) => entry.event === 'openrtb_response');
+  const noBidLog = logs.find((entry) => entry.event === 'no_bid');
+
+  assert.ok(rawLogBeforeFetch);
+  assert.equal(rawLog.request_id, sentBody.id);
+  assert.deepEqual(rawLog.body, sentBody);
+  assert.equal(rawLog.endpoint, EZMOB_HTTP_URL);
+  assert.equal(postedUrl, EZMOB_HTTP_URL);
+  assert.equal(fetchOptions.redirect, 'manual');
+  assert.equal(Object.hasOwn(sentBody.imp[0], 'bidfloor'), false);
+  assert.equal(sentBody.app.bundle, '872115');
+  assert.equal(sentBody.tmax, 500);
+  assert.equal(summaryLog.request_id, sentBody.id);
+  assert.equal(summaryLog.bundle, '872115');
+  assert.equal(summaryLog.configured_protocol, 'http');
+  assert.equal(summaryLog.bidfloor_present, false);
+  assert.equal(responseLog.status, 204);
+  assert.equal(responseLog.redirected, false);
+  assert.equal(noBidLog.reason, 'http_204');
+});
+
+test('unapproved HTTP hostname does not call upstream or log a raw payload', async () => {
   const req = makeReq('/roku/vast?context=startup&lmt=0&ifa=fake');
   const res = makeRes();
   let fetchCalled = false;
@@ -190,12 +237,15 @@ test('unapproved HTTP hostname does not call upstream', async () => {
     fetchCalled = true;
     return { status: 204, ok: true, json: async () => ({}) };
   };
-  await handleRokuVast(req, res, {
-    env: { ...baseEnv, EZMOB_OPENRTB_URL: 'http://evil.example/openrtb/780760269' },
-    fetchImpl
+  const logs = await withCapturedLogs(async () => {
+    await handleRokuVast(req, res, {
+      env: { ...baseEnv, EZMOB_OPENRTB_URL: 'http://evil.example/openrtb/780760269' },
+      fetchImpl
+    });
   });
   assert.equal(fetchCalled, false);
   assert.equal(res.body, EMPTY_VAST);
+  assert.equal(logs.some((entry) => entry.event === 'openrtb_raw_request'), false);
 });
 
 test('highest priced compatible VAST bid is selected', async () => {

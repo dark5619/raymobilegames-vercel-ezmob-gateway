@@ -149,6 +149,17 @@ export async function handleRokuVast(req, res, { env = process.env, fetchImpl = 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+  // TEMPORARY EZMOB DIAGNOSTIC LOGGING
+  // REMOVE AFTER CAPTURING ONE TEST REQUEST
+  if (configured.host === 'ads-n8it6d.rtbexchanges.com') {
+    console.log(JSON.stringify({
+      event: 'openrtb_raw_request',
+      request_id: bidRequest.id,
+      endpoint: upstreamUrl,
+      body: bidRequest
+    }));
+  }
+
   let upstream;
   try {
     upstream = await fetchImpl(upstreamUrl, {
