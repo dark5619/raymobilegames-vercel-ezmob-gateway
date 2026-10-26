@@ -277,3 +277,53 @@ OpenRTB:
 12. Validate mission-5 separately.
 13. Keep the game fail-open on no-fill/error/timeout.
 
+## 14. EZmob Temporary Load Test
+
+> **Temporary diagnostic tooling.** It exists only for the controlled test EZmob asked for. Remove it once troubleshooting is complete.
+
+EZmob samples roughly 1 in 1000 OpenRTB requests, so a few manual Roku tests can still show as 0 QPS / 0 Opportunities. EZmob therefore asked for a short, controlled volume of about 100 QPS against publisher `780760269`.
+
+`scripts/ezmob-load-test.mjs` is a standalone CLI that must be run manually. It is not used by the gateway, is not deployed, and has no HTTP trigger. It POSTs the validated live Roku OpenRTB 2.5 request (bundle `872115`, `devicetype` 3, no `bidfloor`) straight to `http://ads-n8it6d.rtbexchanges.com/openrtb/780760269`, with a new UUID for every `id` and `imp[0].id`.
+
+Built-in limits:
+
+- QPS defaults to 100 and is hard-capped at 100; duration defaults to 60 seconds and is limited to 1-300.
+- Requests go out in 100 ms batches (10 per batch at 100 QPS), and a rolling one-second window guarantees no second ever carries more than the configured QPS.
+- 1200 ms timeout per request, no retries, redirects are not followed.
+- Only the EZmob publisher endpoint above (HTTP or HTTPS) is accepted as a target.
+- The device IP and Roku RIDA come only from environment variables and are never printed.
+- HTTP 204 is the normal no-bid answer and is counted as `no_bid`, not as an error.
+
+**100 QPS for 60 seconds = approximately 6,000 requests.**
+
+- Run it only during the diagnostic window agreed with EZmob.
+- Do not use it as continuous traffic generation.
+- Remove or disable the utility after troubleshooting is complete.
+
+macOS / Linux / Git Bash:
+
+```bash
+EZMOB_TEST_DEVICE_IP="<real-test-device-ip>" \
+EZMOB_TEST_IFA="<real-roku-rida>" \
+EZMOB_LOAD_QPS=100 \
+EZMOB_LOAD_SECONDS=60 \
+npm run ezmob:load-test
+```
+
+Windows PowerShell:
+
+```powershell
+$env:EZMOB_TEST_DEVICE_IP = "<real-test-device-ip>"
+$env:EZMOB_TEST_IFA = "<real-roku-rida>"
+$env:EZMOB_LOAD_QPS = "100"
+$env:EZMOB_LOAD_SECONDS = "60"
+npm run ezmob:load-test
+Remove-Item Env:EZMOB_TEST_DEVICE_IP, Env:EZMOB_TEST_IFA, Env:EZMOB_LOAD_QPS, Env:EZMOB_LOAD_SECONDS
+```
+
+`EZMOB_TEST_DEVICE_IP` must be the device's **public** IPv4 address (the `device.ip` the gateway forwards), not the LAN address shown in Roku settings; private addresses are rejected. To keep the values in the git-ignored `.env` instead, run `node --env-file=.env scripts/ezmob-load-test.mjs`.
+
+The script prints a progress line every 5 seconds, one line per unexpected outcome (a status other than 200/204, a timeout or a network error; the first 100 only), and a final `EZMOB LOAD TEST COMPLETE` block. Send that block (UTC start/end, counts, first and last request ID) to EZmob Tech so they can trace the test window. Ctrl+C stops sending, waits for in-flight requests and still prints the summary. `EZMOB_LOAD_DEBUG=1` also prints the first 5 HTTP 200 bodies, with the device IP and RIDA redacted.
+
+To remove the tool: delete `scripts/ezmob-load-test.mjs`, `test/ezmob-load-test.test.js`, the `ezmob:load-test` npm script, the load-test block in `.env.example` and this section.
+

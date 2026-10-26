@@ -9,6 +9,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check index.js && node --check api/roku-vast.js && node --check api/health.js && node --check src/gateway.js && node --check src/openrtb.js && node --check src/vast.js && node --check src/health.js && node --check src/node-handler.js"
+    "check": "node --check index.js && node --check api/roku-vast.js && node --check api/health.js && node --check src/gateway.js && node --check src/openrtb.js && node --check src/vast.js && node --check src/health.js && node --check src/node-handler.js",
+    "ezmob:load-test": "node scripts/ezmob-load-test.mjs"
   }
 }
